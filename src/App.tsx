@@ -176,50 +176,89 @@ export default function App() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('Auth state change:', event, session);
+      
+      // Always update session state first
+      setSession(session);
+
+      // Clear error state on auth change
+      setError(null);
+      
       try {
-        console.log('Auth state change:', event, session);
-        console.log('Current profile:', profile);
-        
-        setSession(session);
-        
-        if (session) {
-          // Only load profile for sign_in events or initial session check
-          if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
-            console.log('Loading profile for user:', session.user.id);
-            setLoading(true);
-            
-            // First try to find existing profile
-            const { data: existingProfile, error: profileError } = await supabase
-              .from('profiles')
-              .select('*')
-              .eq('id', session.user.id)
-              .single();
-
-            if (profileError) {
-              console.log('Error finding profile:', profileError);
-              // If no profile found, redirect to profile setup
-              setLoading(false);
-              setProfile(null);
-              return;
-            }
-
-            if (existingProfile) {
-              console.log('Found existing profile:', existingProfile);
-              setProfile(existingProfile);
-            } else {
-              console.log('No profile found, user needs to create one');
-              setProfile(null);
-            }
-          }
-        } else {
-          console.log('No session, clearing profile');
+        if (!session) {
+          console.log('No session, clearing profile and state');
           setProfile(null);
+          setLoading(false);
+          return;
         }
+
+        // Handle sign out event explicitly
+        if (event === 'SIGNED_OUT') {
+          console.log('User signed out, clearing state');
+          setProfile(null);
+          setLoading(false);
+          return;
+        }
+
+        // Only proceed with profile loading for sign in or initial session
+        if (event !== 'SIGNED_IN' && event !== 'INITIAL_SESSION') {
+          console.log('Ignoring auth event:', event);
+          return;
+        }
+
+        console.log('Loading profile for user:', session.user.id);
+        setLoading(true);
+
+        // Attempt to load profile
+        const { data: profileData, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+
+        if (error) {
+          // Don't throw on not found error, we'll create the profile
+          if (error.code !== 'PGRST116') {
+            throw error;
+          }
+        }
+
+        if (profileData) {
+          console.log('Found existing profile:', profileData);
+          setProfile(profileData);
+          setLoading(false);
+          return;
+        }
+
+        // Create new profile if none exists
+        console.log('No profile found, creating one...');
+        const { data: newProfile, error: createError } = await supabase
+          .from('profiles')
+          .insert([{
+            id: session.user.id,
+            user_id: session.user.id,
+            display_name: null,
+            created_at: new Date().toISOString()
+          }])
+          .select()
+          .single();
+
+        if (createError) {
+          throw createError;
+        }
+
+        if (!newProfile) {
+          throw new Error('Failed to create user profile');
+        }
+
+        console.log('Created new profile:', newProfile);
+        setProfile(newProfile);
       } catch (err) {
         console.error('Error in auth state change:', err);
         setError(err instanceof Error ? err.message : 'Failed to handle auth change');
+        setProfile(null); // Clear profile on error
       } finally {
-        setLoading(false);
+        setLoading(false); // Always ensure loading state is cleared
       }
     });
 
@@ -227,40 +266,73 @@ export default function App() {
   }, []);
 
   const loadProfile = async (userId: string) => {
+    if (!userId) {
+      console.error('Invalid userId provided to loadProfile:', userId);
+      setLoading(false);
+      setError('Invalid user ID');
+      return;
+    }
+
     console.log('Loading profile for userId:', userId);
     try {
       // First try to find by id
-      const { data: idData, error: idError } = await supabase
+      let { data: profileData, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', userId)
         .single();
 
-      console.log('Profile lookup by id result:', { data: idData, error: idError });
+      console.log('Profile lookup by id result:', { data: profileData, error });
 
-      if (!idData && !idError) {
+      if (!profileData && !error) {
         // If no profile found by id, try with user_id field
-        const { data: userIdData, error: userIdError } = await supabase
+        const response = await supabase
           .from('profiles')
           .select('*')
           .eq('user_id', userId)
           .single();
 
-        console.log('Profile lookup by user_id result:', { data: userIdData, error: userIdError });
+        console.log('Profile lookup by user_id result:', response);
+        profileData = response.data;
+        error = response.error;
+      }
 
-        if (userIdData) {
-          setProfile(userIdData);
-          return;
-        }
-      } else if (idData) {
-        setProfile(idData);
+      if (error) {
+        console.error('Database error while loading profile:', error);
+        setError(error.message);
+        setLoading(false);
+        setProfile(null);
         return;
       }
 
-      // If we get here, no profile was found
-      console.log('No profile found for user, clearing loading state');
-      setLoading(false);
-      setProfile(null);
+      if (!profileData) {
+        console.log('No profile found, will create one...');
+        try {
+          const { data: newProfile, error: createError } = await supabase
+            .from('profiles')
+            .insert([{ 
+              id: userId, 
+              user_id: userId,
+              display_name: null, // Will be set during profile setup
+              created_at: new Date().toISOString()
+            }])
+            .select()
+            .single();
+
+          if (createError) throw createError;
+          if (!newProfile) throw new Error('Failed to create profile');
+
+          console.log('Created new profile:', newProfile);
+          setProfile(newProfile);
+        } catch (createErr) {
+          console.error('Error creating profile:', createErr);
+          setError(createErr instanceof Error ? createErr.message : 'Failed to create profile');
+          setProfile(null);
+        }
+      } else {
+        console.log('Found existing profile:', profileData);
+        setProfile(profileData);
+      }
     } catch (err) {
       console.error('Error loading profile:', err);
       setError(err instanceof Error ? err.message : 'Failed to load profile');
@@ -642,27 +714,36 @@ function MainApp({ profile, setProfile }: MainAppProps) {
                 {dms.length === 0 ? (
                   <p className="text-sm text-gray-500 text-center py-4">No messages yet</p>
                 ) : (
-                  dms.map(dm => (
-                    <button
-                      key={dm.id}
-                      onClick={() => setSelectedChat({ type: 'dm', data: dm.user })}
-                      className={`w-full text-left p-3 rounded-lg mb-1 transition ${
-                        selectedChat?.type === 'dm' && (selectedChat.data as DirectMessage['user']).user_id === dm.user.user_id
-                          ? 'bg-blue-50 border border-blue-200'
-                          : 'hover:bg-gray-50'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold">
-                          {dm.user.display_name?.[0]?.toUpperCase() || dm.user.user_id[0].toUpperCase()}
+                  dms.map(dm => {
+                    // Skip rendering if user data is invalid
+                    if (!dm?.user?.user_id) return null;
+
+                    const displayName = dm.user?.display_name || dm.user?.user_id || 'Unknown User';
+                    const userId = dm.user?.user_id;
+                    const initial = displayName[0]?.toUpperCase() || '?';
+
+                    return (
+                      <button
+                        key={dm.id}
+                        onClick={() => setSelectedChat({ type: 'dm', data: dm.user })}
+                        className={`w-full text-left p-3 rounded-lg mb-1 transition ${
+                          selectedChat?.type === 'dm' && (selectedChat.data as DirectMessage['user']).user_id === userId
+                            ? 'bg-blue-50 border border-blue-200'
+                            : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold">
+                            {initial}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-gray-900 truncate">{displayName}</p>
+                            <p className="text-sm text-gray-500 truncate">@{userId}</p>
+                          </div>
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium text-gray-900 truncate">{dm.user.display_name || dm.user.user_id}</p>
-                          <p className="text-sm text-gray-500 truncate">@{dm.user.user_id}</p>
-                        </div>
-                      </div>
-                    </button>
-                  ))
+                      </button>
+                    );
+                  })
                 )}
               </div>
             </>
@@ -942,33 +1023,40 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map(msg => (
-          <div
-            key={msg.id}
-            className={`flex gap-3 ${msg.sender_id === profile.id ? 'flex-row-reverse' : ''}`}
-          >
-            <div className={`w-8 h-8 ${msg.sender_id === profile.id ? 'bg-green-500' : 'bg-gray-400'} rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0`}>
-              {msg.sender.display_name?.[0]?.toUpperCase() || msg.sender.user_id[0].toUpperCase()}
-            </div>
-            <div className={`max-w-md ${msg.sender_id === profile.id ? 'items-end' : 'items-start'}`}>
-              {msg.sender_id !== profile.id && chat.type === 'group' && (
-                <p className="text-xs text-gray-500 mb-1">
-                  {msg.sender.display_name || msg.sender.user_id}
-                </p>
-              )}
-              <div className={`rounded-lg px-4 py-2 ${
-                msg.sender_id === profile.id
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-gray-100 text-gray-900'
-              }`}>
-                <p>{msg.content}</p>
+        {messages.map(msg => {
+          if (!msg?.sender?.user_id) return null;
+
+          const isOwnMessage = msg.sender_id === profile.id;
+          const displayName = msg.sender?.display_name || msg.sender?.user_id || 'Unknown User';
+          const initial = displayName[0]?.toUpperCase() || '?';
+          const timestamp = msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+
+          return (
+            <div
+              key={msg.id}
+              className={`flex gap-3 ${isOwnMessage ? 'flex-row-reverse' : ''}`}
+            >
+              <div className={`w-8 h-8 ${isOwnMessage ? 'bg-green-500' : 'bg-gray-400'} rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0`}>
+                {initial}
               </div>
-              <p className="text-xs text-gray-400 mt-1">
-                {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </p>
+              <div className={`max-w-md ${isOwnMessage ? 'items-end' : 'items-start'}`}>
+                {!isOwnMessage && chat.type === 'group' && (
+                  <p className="text-xs text-gray-500 mb-1">
+                    {displayName}
+                  </p>
+                )}
+                <div className={`rounded-lg px-4 py-2 ${
+                  isOwnMessage
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-gray-100 text-gray-900'
+                }`}>
+                  <p>{msg.content}</p>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">{timestamp}</p>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
 
