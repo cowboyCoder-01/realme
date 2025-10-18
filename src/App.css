@@ -1,0 +1,54 @@
+/* Custom styles */
+:root {
+  --app-height: 100vh;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  height: var(--app-height);
+}
+
+#root {
+  height: 100%;
+}
+
+/* Scrollbar customization */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* Hide scrollbar for mobile devices */
+@media (max-width: 768px) {
+  ::-webkit-scrollbar {
+    width: 0;
+    background: transparent;
+  }
+}
+
+/* Custom utility classes */
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
