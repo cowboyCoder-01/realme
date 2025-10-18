@@ -1040,7 +1040,10 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
         .select('*, sender:profiles!messages_sender_id_fkey(*)')
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error('Database error:', error);
+        throw new Error(error.message);
+      }
 
       // Replace optimistic message with real one
       if (newMessage) {
@@ -1048,17 +1051,18 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
           prev.map(msg => msg.id === optimisticMessage.id ? newMessage : msg)
         );
       }
+
+      // Message sent successfully
+      console.log('Message sent successfully');
     } catch (error) {
       console.error('Error sending message:', error);
       // Remove failed optimistic message
       setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
-      // TODO: Show error toast to user
-    }
-
-    if (Error) {
-      alert('Error sending message: ' + Error.name);
-    } else {
-      setNewMessage('');
+      
+      // Show error to user only if it's a real error
+      if (error instanceof Error && error.message !== 'OK') {
+        alert(`Failed to send message: ${error.message}`);
+      }
     }
   };
 
