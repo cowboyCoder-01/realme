@@ -1,6 +1,6 @@
 import React, { useState, useEffect, type JSX } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import type { Session } from '@supabase/supabase-js';
+import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import { Send, Plus, LogOut, Settings, Users, MessageCircle, X, Copy, Check, UserPlus, Trash2 } from 'lucide-react';
 import { SpeedInsights } from "@vercel/speed-insights/react";
 import { Analytics } from "@vercel/analytics/react";
@@ -10,6 +10,12 @@ interface Profile {
   user_id: string;
   display_name?: string;
   created_at?: string;
+}
+
+interface NewDMModalProps {
+  onClose: () => void;
+  profile: Profile;
+  onDMStarted: (user: Profile) => void;
 }
 
 interface Group {
@@ -129,33 +135,57 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  throw new Error('Missing Supabase environment variables');
+  console.error('Missing Supabase environment variables');
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+let supabase: SupabaseClient;
+try {
+  supabase = createClient(supabaseUrl || '', supabaseKey || '');
+} catch (err) {
+  console.error('Error initializing Supabase client:', err);
+  throw new Error('Failed to initialize Supabase client');
+}
 
 // Main App Component
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) {
-        loadProfile(session.user.id);
-      } else {
+    const loadInitialSession = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        
+        setSession(session);
+        if (session) {
+          await loadProfile(session.user.id);
+        }
+      } catch (err) {
+        console.error('Error loading session:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load session');
+      } finally {
         setLoading(false);
       }
-    });
+    };
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) {
-        loadProfile(session.user.id);
-      } else {
-        setProfile(null);
+    loadInitialSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      try {
+        setSession(session);
+        if (session) {
+          await loadProfile(session.user.id);
+        } else {
+          setProfile(null);
+        }
+      } catch (err) {
+        console.error('Error in auth state change:', err);
+      } finally {
         setLoading(false);
       }
     });
@@ -164,22 +194,45 @@ export default function App() {
   }, []);
 
   const loadProfile = async (userId: string) => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
 
-    if (data) {
-      setProfile(data);
+      if (error) throw error;
+
+      if (data) {
+        setProfile(data);
+      }
+    } catch (err) {
+      console.error('Error loading profile:', err);
     }
-    setLoading(false);
   };
 
-  if (loading) {
+  if (loading || error) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-        <div className="text-white text-2xl font-bold">Loading...</div>
+        <div className="bg-white/10 backdrop-blur-sm rounded-lg p-8 flex flex-col items-center space-y-4">
+          {loading ? (
+            <>
+              <div className="w-16 h-16 border-4 border-white border-t-transparent rounded-full animate-spin"></div>
+              <div className="text-white text-xl font-medium">Loading...</div>
+            </>
+          ) : error ? (
+            <>
+              <div className="text-white text-xl font-medium">Error</div>
+              <div className="text-white/80 text-center">{error}</div>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-white text-purple-600 rounded-lg hover:bg-white/90 transition"
+              >
+                Try Again
+              </button>
+            </>
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -359,6 +412,7 @@ function MainApp({ profile, setProfile }: MainAppProps) {
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showInviteInput, setShowInviteInput] = useState(false);
+  const [showNewDM, setShowNewDM] = useState(false);
 
   useEffect(() => {
     loadGroups();
@@ -488,6 +542,13 @@ function MainApp({ profile, setProfile }: MainAppProps) {
                   <UserPlus size={20} />
                   Join with Code
                 </button>
+                <button
+                  onClick={() => setShowNewDM(true)}
+                  className="w-full bg-purple-500 text-white rounded-lg px-4 py-2 font-medium hover:bg-purple-600 transition flex items-center justify-center gap-2"
+                >
+                  <MessageCircle size={20} />
+                  New DM
+                </button>
               </div>
 
               <div className="px-4 py-2">
@@ -597,6 +658,17 @@ function MainApp({ profile, setProfile }: MainAppProps) {
           onClose={() => setShowInviteInput(false)}
           profile={profile}
           onJoined={loadGroups}
+        />
+      )}
+      
+      {showNewDM && (
+        <NewDMModal
+          onClose={() => setShowNewDM(false)}
+          profile={profile}
+          onDMStarted={(user) => {
+            setSelectedChat({ type: 'dm', data: user });
+            setShowNewDM(false);
+          }}
         />
       )}
     </div>
@@ -1243,6 +1315,94 @@ function MembersModal({ group, profile, isCreator, onClose }: MembersModalProps)
                 )}
               </div>
             ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// New DM Modal
+function NewDMModal({ onClose, profile, onDMStarted }: NewDMModalProps) {
+  const [searchUserId, setSearchUserId] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [foundUser, setFoundUser] = useState<Profile | null>(null);
+  const [error, setError] = useState('');
+
+  const searchUser = async () => {
+    if (!searchUserId.trim()) return;
+    setSearching(true);
+    setError('');
+    setFoundUser(null);
+
+    const { data, error: searchError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('user_id', searchUserId.trim())
+      .single();
+
+    if (searchError || !data) {
+      setError('User not found');
+    } else if (data.user_id === profile.user_id) {
+      setError('You cannot start a DM with yourself');
+    } else {
+      setFoundUser(data);
+    }
+    setSearching(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-2xl font-bold text-gray-900">New Message</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X size={24} />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">User ID</label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={searchUserId}
+                onChange={(e) => setSearchUserId(e.target.value.toLowerCase())}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="Enter user ID"
+                disabled={searching}
+              />
+              <button
+                onClick={searchUser}
+                disabled={searching || !searchUserId.trim()}
+                className="bg-blue-500 text-white rounded-lg px-4 py-2 font-medium hover:bg-blue-600 transition disabled:opacity-50"
+              >
+                {searching ? '...' : 'Search'}
+              </button>
+            </div>
+            {error && <p className="text-sm text-red-500 mt-1">{error}</p>}
+          </div>
+
+          {foundUser && (
+            <div className="border border-gray-200 rounded-lg p-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold">
+                  {foundUser.display_name?.[0]?.toUpperCase() || foundUser.user_id[0].toUpperCase()}
+                </div>
+                <div>
+                  <p className="font-medium text-gray-900">{foundUser.display_name || foundUser.user_id}</p>
+                  <p className="text-sm text-gray-500">@{foundUser.user_id}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => onDMStarted(foundUser)}
+                className="w-full mt-4 bg-purple-500 text-white rounded-lg px-4 py-2 font-medium hover:bg-purple-600 transition flex items-center justify-center gap-2"
+              >
+                <MessageCircle size={20} />
+                Start Conversation
+              </button>
+            </div>
           )}
         </div>
       </div>
