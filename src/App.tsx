@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, type JSX } from 'react';
+import React, { useState, useEffect, type JSX } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import type { Session } from '@supabase/supabase-js';
 import { Send, Plus, LogOut, Settings, Users, MessageCircle, X, Copy, Check, UserPlus, Trash2 } from 'lucide-react';
@@ -24,6 +24,7 @@ interface Group {
 interface DirectMessage {
   id: string;
   user: {
+    id: string;
     user_id: string;
     display_name?: string;
   };
@@ -54,6 +55,7 @@ interface Message {
   sender_id: string;
   created_at: string;
   sender: {
+    id: string;
     display_name?: string;
     user_id: string;
   };
@@ -353,7 +355,7 @@ function MainApp({ profile, setProfile }: MainAppProps) {
   const [selectedChat, setSelectedChat] = useState<ChatData | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [dms, setDMs] = useState<DirectMessage[]>([]);
-  const [invites, setInvites] = useState<any[]>([]);
+  const [invites, setInvites] = useState<Invite[]>([]);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showInviteInput, setShowInviteInput] = useState(false);
@@ -368,7 +370,7 @@ function MainApp({ profile, setProfile }: MainAppProps) {
     const { data } = await supabase
       .from('group_members')
       .select('*, groups(*)')
-      .eq('user_id', profile.user_id);
+      .eq('user_id', profile.id);
 
     if (data) {
       setGroups(data.map(gm => gm.groups));
@@ -379,17 +381,17 @@ function MainApp({ profile, setProfile }: MainAppProps) {
     const { data } = await supabase
       .from('messages')
       .select('*, sender:profiles!messages_sender_id_fkey(*), recipient:profiles!messages_recipient_id_fkey(*)')
-      .or(`sender_id.eq.${profile.user_id},recipient_id.eq.${profile.user_id}`)
+      .or(`sender_id.eq.${profile.id},recipient_id.eq.${profile.id}`)
       .order('created_at', { ascending: false });
 
     if (data) {
       const dmMap = new Map();
       data.forEach(msg => {
-        const otherId = msg.sender_id === profile.user_id ? msg.recipient_id : msg.sender_id;
+        const otherId = msg.sender_id === profile.id ? msg.recipient_id : msg.sender_id;
         if (!dmMap.has(otherId)) {
           dmMap.set(otherId, {
             id: otherId,
-            user: msg.sender_id === profile.user_id ? msg.recipient : msg.sender,
+            user: msg.sender_id === profile.id ? msg.recipient : msg.sender,
             lastMessage: msg,
           });
         }
@@ -694,10 +696,6 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
   const [showMembers, setShowMembers] = useState(false);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
 
-  // Fix for TypeScript scope issues
-  const currentChat = chat;
-  const currentProfile = profile;
-
   useEffect(() => {
     loadMessages();
 
@@ -730,8 +728,8 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
     if (chat.type === 'group') {
       query = query.eq('group_id', (chat.data as Group).id);
     } else {
-      query = query
-        .or(`and(sender_id.eq.${profile.user_id},recipient_id.eq.${(chat.data as DirectMessage['user']).user_id}),and(sender_id.eq.${(chat.data as DirectMessage['user']).user_id},recipient_id.eq.${profile.user_id})`);
+      const dmUser = chat.data as DirectMessage['user'];
+      query = query.or(`and(sender_id.eq.${profile.id},recipient_id.eq.${dmUser.id}),and(sender_id.eq.${dmUser.id},recipient_id.eq.${profile.id})`);
     }
 
     const { data } = await query;
@@ -744,12 +742,14 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
 
     const messageData: MessageData = {
       content: newMessage,
-      sender_id: profile.user_id,
-      ...(chat.type === 'group' 
-        ? { group_id: (chat.data as Group).id }
-        : { recipient_id: (chat.data as DirectMessage['user']).user_id }
-      )
+      sender_id: profile.id,
     };
+
+    if (chat.type === 'group') {
+      messageData.group_id = (chat.data as Group).id;
+    } else {
+      messageData.recipient_id = (chat.data as DirectMessage['user']).id;
+    }
 
     const { error } = await supabase
       .from('messages')
@@ -797,127 +797,7 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
                 <Users size={18} />
                 Members
               </button>
-              {chat.type === 'group' && (chat.data as Group).creator_id === profile.user_id && (
-                <button
-                  onClick={() => setShowInvite(true)}
-                  className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition flex items-center gap-2"
-                >
-                  <UserPlus size={18} />
-                  Invite
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map(msg => (
-          <div
-            key={msg.id}
-            className={`flex gap-3 ${msg.sender_id === profile.user_id ? 'flex-row-reverse' : ''}`}
-          >
-            <div className={`w-8 h-8 ${msg.sender_id === profile.user_id ? 'bg-green-500' : 'bg-gray-400'} rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0`}>
-              {msg.sender.display_name?.[0]?.toUpperCase() || msg.sender.user_id[0].toUpperCase()}
-            </div>
-            <div className={`max-w-md ${msg.sender_id === profile.user_id ? 'items-end' : 'items-start'}`}>
-              {msg.sender_id !== profile.user_id && chat.type === 'group' && (
-                <p className="text-xs text-gray-500 mb-1">
-                  {msg.sender.display_name || msg.sender.user_id}
-                </p>
-              )}
-              <div className={`rounded-lg px-4 py-2 ${
-                msg.sender_id === profile.user_id
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-gray-100 text-gray-900'
-              }`}>
-                <p>{msg.content}</p>
-              </div>
-              <p className="text-xs text-gray-400 mt-1">
-                {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </p>
-            </div>
-          </div>
-        ))}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Message Input */}
-      <div className="bg-white border-t border-gray-200 p-4">
-        <form onSubmit={sendMessage} className="flex gap-2">
-          <input
-            type="text"
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            placeholder="Type a message..."
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          />
-          <button
-            type="submit"
-            className="bg-blue-500 text-white rounded-lg px-6 py-2 font-medium hover:bg-blue-600 transition flex items-center gap-2"
-          >
-            <Send size={18} />
-          </button>
-        </form>
-      </div>
-
-      {/* Modals */}
-      {showInvite && chat.type === 'group' && (
-        <InviteModal
-          group={chat.data as Group}
-          profile={profile}
-          onClose={() => setShowInvite(false)}
-        />
-      )}
-
-      {showMembers && chat.type === 'group' && (
-        <MembersModal
-          group={chat.data as Group}
-          profile={profile}
-          isCreator={(chat.data as Group).creator_id === profile.user_id}
-          onClose={() => setShowMembers(false)}
-        />
-      )}
-    </>
-  );
-
-  return (
-    <>
-      {/* Chat Header */}
-      <div className="bg-white border-b border-gray-200 p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className={`w-12 h-12 ${chat.type === 'group' ? 'bg-blue-500' : 'bg-purple-500'} rounded-full flex items-center justify-center text-white font-bold`}>
-              {chat.type === 'group' ? (
-                <Users size={24} />
-              ) : (
-                ((chat.data as DirectMessage['user']).display_name?.[0]?.toUpperCase() || 
-                 (chat.data as DirectMessage['user']).user_id[0].toUpperCase())
-              )}
-            </div>
-            <div>
-              <h2 className="text-xl font-bold text-gray-900">
-                {chat.type === 'group' 
-                  ? (chat.data as Group).name 
-                  : (chat.data as DirectMessage['user']).display_name || (chat.data as DirectMessage['user']).user_id}
-              </h2>
-              {chat.type === 'dm' && (
-                <p className="text-sm text-gray-500">@{(chat.data as DirectMessage['user']).user_id}</p>
-              )}
-            </div>
-          </div>
-          
-          {chat.type === 'group' && (
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowMembers(true)}
-                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2"
-              >
-                <Users size={18} />
-                Members
-              </button>
-              {chat.type === 'group' && (chat.data as Group).creator_id === profile.id && (
+              {(chat.data as Group).creator_id === profile.id && (
                 <button
                   onClick={() => setShowInvite(true)}
                   className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition flex items-center gap-2"
@@ -994,8 +874,8 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
       {showMembers && chat.type === 'group' && (
         <MembersModal
           group={chat.data as Group}
-          isCreator={(chat.data as Group).creator_id === profile.user_id}
           profile={profile}
+          isCreator={(chat.data as Group).creator_id === profile.id}
           onClose={() => setShowMembers(false)}
         />
       )}
@@ -1019,7 +899,7 @@ function CreateGroupModal({ onClose, profile, onCreated }: CreateGroupModalProps
         {
           name,
           description,
-                        creator_id: profile.user_id,
+          creator_id: profile.id,
         },
       ])
       .select()
@@ -1107,7 +987,7 @@ function JoinGroupModal({ onClose, profile, onJoined }: JoinGroupModalProps) {
       .insert([
         {
           group_id: group.id,
-          user_id: profile.user_id,
+          user_id: profile.id,
         },
       ]);
 
@@ -1197,7 +1077,7 @@ function InviteModal({ group, profile, onClose }: InviteModalProps) {
         {
           group_id: group.id,
           invited_user_id: userIdToInvite,
-          invited_by: profile.user_id,
+          invited_by: profile.id,
         },
       ]);
 
@@ -1231,7 +1111,7 @@ function InviteModal({ group, profile, onClose }: InviteModalProps) {
             <div className="flex gap-2">
               <input
                 type="text"
-                value={group.invite_code}
+                value={group.invite_code || ''}
                 readOnly
                 className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 font-mono"
               />
@@ -1303,8 +1183,7 @@ function MembersModal({ group, profile, isCreator, onClose }: MembersModalProps)
   const removeMember = async (memberId: string) => {
     if (!confirm('Are you sure you want to remove this member?')) return;
 
-    // Don't allow removing yourself
-    if (memberId === profile.user_id) {
+    if (memberId === profile.id) {
       alert('You cannot remove yourself from the group');
       return;
     }
@@ -1419,7 +1298,7 @@ function SettingsModal({ profile, onClose, onUpdate }: SettingsModalProps) {
         user_id: newUserId,
         display_name: newDisplayName,
       })
-      .eq('user_id', profile.user_id)
+      .eq('id', profile.id)
       .select()
       .single();
 
