@@ -53,6 +53,7 @@ interface MessageData {
   sender_id: string;
   group_id?: string;
   recipient_id?: string;
+  created_at?: string;
 }
 
 interface Message {
@@ -154,24 +155,43 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let mounted = true;
+
     const loadInitialSession = async () => {
       try {
+        console.log('Loading initial session...');
         const { data: { session }, error } = await supabase.auth.getSession();
-        if (error) throw error;
         
+        if (error) throw error;
+        if (!mounted) return;
+
+        console.log('Initial session loaded:', session);
         setSession(session);
-        if (session) {
+        
+        if (session?.user?.id) {
+          console.log('Loading profile for session user:', session.user.id);
           await loadProfile(session.user.id);
+        } else {
+          console.log('No session user found');
+          setProfile(null);
         }
       } catch (err) {
-        console.error('Error loading session:', err);
+        console.error('Error loading initial session:', err);
+        if (!mounted) return;
         setError(err instanceof Error ? err.message : 'Failed to load session');
+        setProfile(null);
       } finally {
-        setLoading(false);
+        if (mounted) {
+          setLoading(false);
+        }
       }
     };
 
     loadInitialSession();
+
+    return () => {
+      mounted = false;
+    };
 
     const {
       data: { subscription },
@@ -906,18 +926,51 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
   const [showMembers, setShowMembers] = useState(false);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
 
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
   useEffect(() => {
     loadMessages();
 
+    // Set up real-time subscription for new messages
+    let filter = {};
+    if (chat.type === 'group') {
+      filter = { group_id: (chat.data as Group).id };
+    } else {
+      const dmUser = chat.data as DirectMessage['user'];
+      filter = {
+        or: [
+          { and: [{ sender_id: profile.id }, { recipient_id: dmUser.id }] },
+          { and: [{ sender_id: dmUser.id }, { recipient_id: profile.id }] }
+        ]
+      };
+    }
+
     const channel = supabase
       .channel('messages')
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
-      }, () => {
-        loadMessages();
-      })
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `group_id=eq.${chat.type === 'group' ? (chat.data as Group).id : null}`
+        },
+        async (payload) => {
+          // Fetch the complete message with sender info
+          const { data } = await supabase
+            .from('messages')
+            .select('*, sender:profiles!messages_sender_id_fkey(*)')
+            .eq('id', payload.new.id)
+            .single();
+
+          if (data) {
+            setMessages(prev => [...prev, data]);
+            scrollToBottom();
+          }
+        }
+      )
       .subscribe();
 
     return () => {
@@ -951,22 +1004,59 @@ function ChatView({ chat, profile }: ChatViewProps): JSX.Element {
     if (!newMessage.trim()) return;
 
     const messageData: MessageData = {
-      content: newMessage,
+      content: newMessage.trim(),
       sender_id: profile.id,
+      created_at: new Date().toISOString(),
+      ...(chat.type === 'group'
+        ? { group_id: (chat.data as Group).id }
+        : { recipient_id: (chat.data as DirectMessage['user']).user_id })
     };
 
-    if (chat.type === 'group') {
-      messageData.group_id = (chat.data as Group).id;
-    } else {
-      messageData.recipient_id = (chat.data as DirectMessage['user']).id;
+    // Clear input immediately for better UX
+    setNewMessage('');
+
+    // Create optimistic message
+    const optimisticMessage: Message = {
+      id: `temp-${Date.now()}`,
+      content: messageData.content,
+      sender_id: profile.id,
+      created_at: new Date().toISOString(),
+      sender: {
+        id: profile.id,
+        user_id: profile.user_id,
+        display_name: profile.display_name
+      }
+    };
+
+    // Add optimistic message to UI
+    setMessages(prev => [...prev, optimisticMessage]);
+    scrollToBottom();
+
+    try {
+      // Send message to server
+      const { data: newMessage, error } = await supabase
+        .from('messages')
+        .insert([messageData])
+        .select('*, sender:profiles!messages_sender_id_fkey(*)')
+        .single();
+
+      if (error) throw error;
+
+      // Replace optimistic message with real one
+      if (newMessage) {
+        setMessages(prev => 
+          prev.map(msg => msg.id === optimisticMessage.id ? newMessage : msg)
+        );
+      }
+    } catch (error) {
+      console.error('Error sending message:', error);
+      // Remove failed optimistic message
+      setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
+      // TODO: Show error toast to user
     }
 
-    const { error } = await supabase
-      .from('messages')
-      .insert([messageData]);
-
-    if (error) {
-      alert('Error sending message: ' + error.message);
+    if (Error) {
+      alert('Error sending message: ' + Error.name);
     } else {
       setNewMessage('');
     }
