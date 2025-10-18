@@ -178,14 +178,41 @@ export default function App() {
     } = supabase.auth.onAuthStateChange(async (event, session) => {
       try {
         console.log('Auth state change:', event, session);
+        console.log('Current profile:', profile);
+        
         setSession(session);
+        
         if (session) {
           // Only load profile for sign_in events or initial session check
           if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+            console.log('Loading profile for user:', session.user.id);
             setLoading(true);
-            await loadProfile(session.user.id);
+            
+            // First try to find existing profile
+            const { data: existingProfile, error: profileError } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', session.user.id)
+              .single();
+
+            if (profileError) {
+              console.log('Error finding profile:', profileError);
+              // If no profile found, redirect to profile setup
+              setLoading(false);
+              setProfile(null);
+              return;
+            }
+
+            if (existingProfile) {
+              console.log('Found existing profile:', existingProfile);
+              setProfile(existingProfile);
+            } else {
+              console.log('No profile found, user needs to create one');
+              setProfile(null);
+            }
           }
         } else {
+          console.log('No session, clearing profile');
           setProfile(null);
         }
       } catch (err) {
@@ -200,37 +227,44 @@ export default function App() {
   }, []);
 
   const loadProfile = async (userId: string) => {
+    console.log('Loading profile for userId:', userId);
     try {
       // First try to find by id
-      let { data, error } = await supabase
+      const { data: idData, error: idError } = await supabase
         .from('profiles')
         .select('*')
-        .eq('user_id', userId)
+        .eq('id', userId)
         .single();
 
-      if (!data) {
-        // If no profile found by user_id, try with id field
-        ({ data, error } = await supabase
+      console.log('Profile lookup by id result:', { data: idData, error: idError });
+
+      if (!idData && !idError) {
+        // If no profile found by id, try with user_id field
+        const { data: userIdData, error: userIdError } = await supabase
           .from('profiles')
           .select('*')
-          .eq('id', userId)
-          .single());
-      }
+          .eq('user_id', userId)
+          .single();
 
-      if (error) {
-        console.error('Error loading profile:', error);
+        console.log('Profile lookup by user_id result:', { data: userIdData, error: userIdError });
+
+        if (userIdData) {
+          setProfile(userIdData);
+          return;
+        }
+      } else if (idData) {
+        setProfile(idData);
         return;
       }
 
-      if (data) {
-        setProfile(data);
-      } else {
-        // If still no profile found, clear the loading state
-        setLoading(false);
-      }
+      // If we get here, no profile was found
+      console.log('No profile found for user, clearing loading state');
+      setLoading(false);
+      setProfile(null);
     } catch (err) {
       console.error('Error loading profile:', err);
       setError(err instanceof Error ? err.message : 'Failed to load profile');
+      setLoading(false);
     }
   };
 
