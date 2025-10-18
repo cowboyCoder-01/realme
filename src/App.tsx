@@ -175,16 +175,22 @@ export default function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
       try {
+        console.log('Auth state change:', event, session);
         setSession(session);
         if (session) {
-          await loadProfile(session.user.id);
+          // Only load profile for sign_in events or initial session check
+          if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+            setLoading(true);
+            await loadProfile(session.user.id);
+          }
         } else {
           setProfile(null);
         }
       } catch (err) {
         console.error('Error in auth state change:', err);
+        setError(err instanceof Error ? err.message : 'Failed to handle auth change');
       } finally {
         setLoading(false);
       }
@@ -195,19 +201,36 @@ export default function App() {
 
   const loadProfile = async (userId: string) => {
     try {
-      const { data, error } = await supabase
+      // First try to find by id
+      let { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', userId)
+        .eq('user_id', userId)
         .single();
 
-      if (error) throw error;
+      if (!data) {
+        // If no profile found by user_id, try with id field
+        ({ data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', userId)
+          .single());
+      }
+
+      if (error) {
+        console.error('Error loading profile:', error);
+        return;
+      }
 
       if (data) {
         setProfile(data);
+      } else {
+        // If still no profile found, clear the loading state
+        setLoading(false);
       }
     } catch (err) {
       console.error('Error loading profile:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load profile');
     }
   };
 
