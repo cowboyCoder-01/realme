@@ -7,5 +7,9 @@ export default defineConfig({
   build: {
     outDir: 'build',
     sourcemap: true
+  },
+  base: './',
+  server: {
+    port: 3000
   }
 })
